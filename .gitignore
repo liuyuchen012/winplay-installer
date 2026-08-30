@@ -1,0 +1,20 @@
+# 构建产物
+bin/
+obj/
+*.pdb
+
+# 本地开发与测试冗余
+*.apk
+adbkeyboard.apk
+VSCodeSetup-x64.exe
+VSCode-win32-x64.zip
+*.b64
+*.bak
+*.png
+_ghtool/
+gh.zip
+
+# IDE
+.vs/
+.idea/
+*.user
