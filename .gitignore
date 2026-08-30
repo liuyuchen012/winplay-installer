@@ -3,7 +3,7 @@ bin/
 obj/
 *.pdb
 
-# 本地开发与测试冗余
+# 本地开发与测试冗余（明确保留 Resources 内图标与 assets 截图）
 *.apk
 adbkeyboard.apk
 VSCodeSetup-x64.exe
@@ -11,8 +11,12 @@ VSCode-win32-x64.zip
 *.b64
 *.bak
 *.png
+!Resources/**/*.png
+!assets/**/*.png
 _ghtool/
 gh.zip
+gh.msi
+gh_test.bin
 
 # IDE
 .vs/
