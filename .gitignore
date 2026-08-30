@@ -22,3 +22,4 @@ gh_test.bin
 .vs/
 .idea/
 *.user
+devicelogin.log
