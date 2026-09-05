@@ -4,6 +4,7 @@
           android:versionCode="1"
           android:versionName="1.0">
   <uses-sdk android:minSdkVersion="30" />
+  <uses-permission android:name="android.permission.INTERNET" />
   <queries>
     <package android:name="com.xiaomi.winplay" />
   </queries>

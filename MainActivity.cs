@@ -19,6 +19,22 @@ using APath = Android.Graphics.Path;
 
 namespace WinPlayInstaller
 {
+    // 全局结构化日志：记录到 App 内所有操作（UI 操作日志、root 通信、wine 调用、引擎交互）与异常
+    public static class LogStore
+    {
+        static readonly System.Text.StringBuilder B = new System.Text.StringBuilder();
+        static readonly object L = new object();
+        public static void Add(string line)
+        {
+            lock (L)
+            {
+                B.Append('[').Append(DateTime.Now.ToString("HH:mm:ss")).Append("] ").Append(line).AppendLine();
+                if (B.Length > 200000) { var s = B.ToString().Substring(50000); B.Clear(); B.Append(s); }
+            }
+        }
+        public static string Full() { lock (L) { return B.ToString(); } }
+    }
+
     [Activity(Label = "WinPlay安装器", MainLauncher = true, Exported = true,
         LaunchMode = LaunchMode.SingleTop,
         Theme = "@android:style/Theme.DeviceDefault.Light.NoActionBar",
@@ -45,6 +61,8 @@ namespace WinPlayInstaller
         EditText _pathInput;
         Button _pathBtn;
         Button _fixBtn;
+        EditText _fbToken;
+        EditText _fbDesc;
 
         string _pickedSharePath;
         string _pickedName;
@@ -123,6 +141,28 @@ namespace WinPlayInstaller
             _fixBtn.Click += (s, e) => FixEngineStart();
             root.AddView(_fixBtn);
 
+            var exportBtn = new Button(this) { Text = "⑩ 导出详细日志（含 root 通信/wine 调用全过程）" };
+            exportBtn.Click += (s, e) => ExportLog();
+            root.AddView(exportBtn);
+
+            var fbTitle = new TextView(this) { Text = "── 问题反馈 ──", TextSize = 14f };
+            fbTitle.SetTextColor(Color.Rgb(30, 80, 160));
+            root.AddView(fbTitle);
+
+            _fbToken = new EditText(this) { Hint = "GitHub Token（可选）：在 github.com/settings/tokens 生成，只需 Issues 写权限", TextSize = 12f };
+            root.AddView(_fbToken);
+
+            _fbDesc = new EditText(this) { Hint = "问题描述：机型/系统版本/操作步骤/现象…", TextSize = 13f };
+            root.AddView(_fbDesc);
+
+            var fbSend = new Button(this) { Text = "⑪ 发送反馈（设备信息+日志自动附带，上传到 GitHub Issues）" };
+            fbSend.Click += (s, e) => SendFeedback();
+            root.AddView(fbSend);
+
+            var fbCopy = new Button(this) { Text = "复制反馈内容到剪贴板（无 Token 时用）" };
+            fbCopy.Click += (s, e) => CopyFeedback();
+            root.AddView(fbCopy);
+
             _mainExe.TextChanged += (s, e) =>
             {
                 bool ok = !string.IsNullOrWhiteSpace(_mainExe.Text);
@@ -138,6 +178,7 @@ namespace WinPlayInstaller
             scroll.AddView(root);
             SetContentView(scroll);
 
+            RootShell.OnLog = m => LogStore.Add(m);
             CheckRoot();
         }
 
@@ -596,6 +637,149 @@ echo __WINE_EXIT=$?
             if (s == null) return "";
             return s.Length <= n ? s : s.Substring(0, n);
         }
+
+        // ---------- ⑩ 导出日志 ----------
+        async Task ExportLog()
+        {
+            await Task.Run(() =>
+            {
+                try
+                {
+                    var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                    var log = BuildLog(stamp);
+                    var values = new ContentValues();
+                    values.Put(MediaStore.Downloads.InterfaceConsts.DisplayName, "winplay_log_" + stamp + ".log");
+                    values.Put(MediaStore.Downloads.InterfaceConsts.MimeType, "text/plain");
+                    values.Put(MediaStore.Downloads.InterfaceConsts.RelativePath, "Download/");
+                    var uri = ContentResolver.Insert(MediaStore.Downloads.ExternalContentUri, values);
+                    if (uri == null) { Log("✕ 日志保存被拒绝（存储权限）"); return; }
+                    using (var os = ContentResolver.OpenOutputStream(uri))
+                    using (var sw = new System.IO.StreamWriter(os))
+                        sw.Write(log);
+                    Log("✔ 日志已保存 /sdcard/Download/winplay_log_" + stamp + ".log（" + log.Length + " 字符）");
+                    RunOnUiThread(() =>
+                    {
+                        try
+                        {
+                            var share = new Intent(Intent.ActionSend);
+                            share.SetType("text/plain");
+                            share.PutExtra(Intent.ExtraText, log);
+                            share.PutExtra(Intent.ExtraSubject, "WinPlay 安装器日志 " + stamp);
+                            StartActivity(Intent.CreateChooser(share, "分享日志"));
+                        }
+                        catch { }
+                    });
+                }
+                catch (Exception ex) { Log("✕ 导出日志失败：" + ex.Message); }
+            });
+        }
+
+        string BuildLog(string stamp)
+        {
+            var dev = "";
+            try
+            {
+                var b = new System.Text.StringBuilder();
+                b.AppendLine("机型: " + Build.Manufacturer + " " + Build.Model);
+                b.AppendLine("型号: " + Build.Device);
+                b.AppendLine("Android: " + Build.VERSION.Release + " (SDK " + Build.VERSION.SdkInt + ")");
+                b.AppendLine("App: " + PackageManager.GetPackageInfo(PackageName, 0).VersionName);
+                dev = b.ToString();
+            }
+            catch { }
+            return stamp + "\n" + dev + "\n── 日志开始 ──\n" + LogStore.Full() + "\n── 日志结束 ──\n";
+        }
+
+        // ---------- ⑪ 反馈：自动上传 GitHub Issue（bug + feedback 标签） ----------
+        const string FbRepo = "liuyuchen012/winplay-installer";
+
+        async Task SendFeedback()
+        {
+            var desc = _fbDesc.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(desc)) { Log("请先填写问题描述。"); return; }
+            var token = _fbToken.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                Log("✕ 未填写 GitHub Token：请先生成（settings/tokens → Fine-grained → Issue 写权限），或点下方复制按钮手动反馈。");
+                return;
+            }
+            var stamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            var title = "[" + stamp + "] " + Build.Model + " " + desc.Substring(0, Math.Min(46, desc.Length)).Replace("\n", " ");
+            var body = BuildFeedbackBody(desc, stamp, withLog: true);
+            Log("→ 正在上传问题反馈（" + body.Length + " 字符）…");
+            var r = await PostIssueAsync(token, title, body);
+            if (r != null) Log("✔ 已提交 Issue：" + r);
+            else Log("✕ 提交失败（Token 权限/网络），可用「复制反馈内容」手动创建。");
+        }
+
+        void CopyFeedback()
+        {
+            var desc = _fbDesc.Text?.Trim() ?? "";
+            var stamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            var title = "[" + stamp + "] " + Build.Model + " " + (desc.Length > 40 ? desc.Substring(0, 40) : desc);
+            var body = BuildFeedbackBody(desc, stamp, withLog: true);
+            var clip = Android.Content.ClipData.NewPlainText("feedback", title + "\n\n" + body);
+            // .NET 绑定未导出 SetPrimaryClip，用 Java 反射调用
+            var cm = GetSystemService(ClipboardService);
+            var method = cm.Class.GetMethod("setPrimaryClip", new Java.Lang.Class[] { Java.Lang.Class.FromType(typeof(Android.Content.ClipData)) });
+            method.Invoke(cm, new Java.Lang.Object[] { clip });
+            Log("✔ 反馈内容已复制到剪贴板（含设备信息与日志），粘贴到 github.com/" + FbRepo + "/issues/new");
+        }
+
+        string BuildFeedbackBody(string desc, string stamp, bool withLog)
+        {
+            var b = new System.Text.StringBuilder();
+            b.AppendLine("## 反馈时间\n" + stamp);
+            b.AppendLine("## 设备\n" + Build.Manufacturer + " " + Build.Model + " (" + Build.Device + ")\nAndroid " + Build.VERSION.Release + " / SDK " + Build.VERSION.SdkInt);
+            try { b.AppendLine("\nApp 版本: " + PackageManager.GetPackageInfo(PackageName, 0).VersionName); } catch { }
+            b.AppendLine("\n## 问题描述\n" + desc);
+            if (withLog)
+            {
+                var log = LogStore.Full();
+                if (log.Length > 55000) log = log.Substring(log.Length - 55000);
+                b.AppendLine("' + bs + 'n## 详细日志（root通信/wine调用）' + bs + 'n```' + bs + 'n" + log + "' + bs + 'n```");
+            }
+            return b.ToString();
+        }
+
+        async Task<string> PostIssueAsync(string token, string title, string body)
+        {
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    var payload = "{\"title\":" + JsonEscape(title) + ",\"body\":" + JsonEscape(body) + ",\"labels\":[\"bug\",\"feedback\"]}";
+                    var bytes = System.Text.Encoding.UTF8.GetBytes(payload);
+                    var conn = (Java.Net.HttpURLConnection)(new Java.Net.URL("https://api.github.com/repos/" + FbRepo + "/issues")).OpenConnection();
+                    conn.RequestMethod = "POST";
+                    conn.SetRequestProperty("Authorization", "Bearer " + token);
+                    conn.SetRequestProperty("Accept", "application/vnd.github+json");
+                    conn.SetRequestProperty("Content-Type", "application/json");
+                    conn.DoOutput = true;
+                    conn.ConnectTimeout = 20000;
+                    conn.ReadTimeout = 30000;
+                    using (var os = conn.OutputStream)
+                    {
+                        os.Write(bytes, 0, bytes.Length);
+                        os.Flush();
+                    }
+                    int code = (int)conn.ResponseCode;
+                    var stream = code >= 400 ? conn.ErrorStream : conn.InputStream;
+                    if (stream == null) return null;
+                    using (var reader = new System.IO.StreamReader(stream, System.Text.Encoding.UTF8))
+                    {
+                        var resp = reader.ReadToEnd();
+                        if (code >= 300) { LogStore.Add("[feedback] HTTP " + code + ": " + (resp.Length > 200 ? resp.Substring(0, 200) : resp)); return null; }
+                        var m = System.Text.RegularExpressions.Regex.Match(resp, "\"number\":(\\d+)");
+                        return m.Success ? ("#" + m.Groups[1].Value + " https://github.com/" + FbRepo + "/issues/" + m.Groups[1].Value) : ("HTTP " + code);
+                    }
+                }
+                catch (Exception ex) { LogStore.Add("[feedback] POST 异常: " + ex.Message); return null; }
+            });
+        }
+
+        static string JsonEscape(string s) =>
+            s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "").Replace("\t", "\\t");
 
         int Dp(int v) => (int)(v * Resources.DisplayMetrics.Density);
     }
