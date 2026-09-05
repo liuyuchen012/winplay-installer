@@ -42,10 +42,15 @@ namespace WinPlayInstaller
         Button _shortcutBtn;
         Button _launchBtn;
         Button _steamBtn;
+        EditText _pathInput;
+        Button _pathBtn;
+        Button _fixBtn;
 
         string _pickedSharePath;
         string _pickedName;
         bool _haveRoot;
+        string _driveC; // 引擎容器根目录（按机型探测，见 ResolveDriveAsync）
+        string _prefix; // 引擎 WINEPREFIX（drive_c 上级）
 
         protected override void OnCreate(Bundle savedInstanceState)
         {
@@ -107,6 +112,17 @@ namespace WinPlayInstaller
             _steamBtn.Click += (s, e) => AddSteamShortcut();
             root.AddView(_steamBtn);
 
+            _pathInput = new EditText(this) { Hint = "①-备 直接输入安装包路径（选择器不可用时，如 /sdcard/Download/app.exe）", TextSize = 13f };
+            root.AddView(_pathInput);
+
+            _pathBtn = new Button(this) { Text = "用上面路径安装" };
+            _pathBtn.Click += (s, e) => InstallByPath();
+            root.AddView(_pathBtn);
+
+            _fixBtn = new Button(this) { Text = "⑨ 引擎启动修复（初始化失败/卡99%时点这里）" };
+            _fixBtn.Click += (s, e) => FixEngineStart();
+            root.AddView(_fixBtn);
+
             _mainExe.TextChanged += (s, e) =>
             {
                 bool ok = !string.IsNullOrWhiteSpace(_mainExe.Text);
@@ -140,10 +156,11 @@ namespace WinPlayInstaller
 
         void PickFile()
         {
+            // 注意：不加 ExtraMimeTypes。部分机型（如平板 6sPro）的文件管理器会按该列表过滤，
+            // 导致 exe 文件不可见（Issue #1）。*/* 全量显示最稳。
             var intent = new Intent(Intent.ActionOpenDocument);
             intent.AddCategory(Intent.CategoryOpenable);
             intent.SetType("*/*");
-            intent.PutExtra(Intent.ExtraMimeTypes, new[] { "application/x-msdownload", "application/vnd.microsoft.portable-executable", "application/octet-stream", "application/zip", "application/x-zip-compressed" });
             StartActivityForResult(intent, PickFileRequest);
         }
 
@@ -204,7 +221,9 @@ namespace WinPlayInstaller
 
             Log("→ 开始自动安装：" + name);
             if (!_haveRoot) { Log("✕ 自动安装需要 root（见上方说明），可改用③图形向导。"); return; }
-            var ck = await RootShell.ExecAsync($"test -d {PrefixDrive} && echo OK || echo NO");
+            _driveC = await ResolveDriveAsync();
+            if (_driveC == null) { Log("✕ 未找到 PC 引擎容器（引擎可能未完成首次初始化，或该机型/系统未内置 PC 引擎）。"); return; }
+            var ck = await RootShell.ExecAsync($"test -d {_driveC} && echo OK || echo NO");
             if (!ck.Output.Contains("OK"))
             {
                 var dbg = await RootShell.ExecAsync("echo PWD=$PWD; id; ls -ld /data/user/0/com.xiaomi.winplay/files/prefix; ls -ld /data/user/0/com.xiaomi.winplay; ls /data/data 2>&1 | head -3; mountpoint -q /data && echo DATA_IS_MN || echo DATA_NOT_MN");
@@ -215,9 +234,9 @@ namespace WinPlayInstaller
             var safe = Regex.Replace(name, @"[^a-zA-Z0-9_-]", "") + ".bin";
             var r = await RootShell.ExecScriptAsync(new[]
             {
-                $"mkdir -p {PrefixDrive}/wpinst",
-                $"cp '{_pickedSharePath}' {PrefixDrive}/wpinst/{safe}",
-                $"chown -R {EngineUid}:{EngineUid} {PrefixDrive}/wpinst",
+                $"mkdir -p {(_driveC ?? PrefixDrive)}/wpinst",
+                $"cp '{_pickedSharePath}' {(_driveC ?? PrefixDrive)}/wpinst/{safe}",
+                $"chown -R {EngineUid}:{EngineUid} {(_driveC ?? PrefixDrive)}/wpinst",
                 "echo COPY_OK"
             });
             if (!r.Output.Contains("COPY_OK")) { Log("✕ 拷贝失败：" + r.Error); return; }
@@ -281,14 +300,14 @@ namespace WinPlayInstaller
             Log("✔ 识别主程序：" + mainDos + (linked != mainDos ? "  →（无空格链接）" + linked : ""));
 
             await CreateShortcutAsync(name, _mainExe.Text);
-            await RootShell.ExecAsync($"rm -f {PrefixDrive}/wpinst/{safe}");
+            await RootShell.ExecAsync($"rm -f {(_driveC ?? PrefixDrive)}/wpinst/{safe}");
         }
 
         async Task<string> DetectInstallerAsync(string safe)
         {
             try
             {
-                var r = await RootShell.ExecAsync($"head -c 65536 '{PrefixDrive}/wpinst/{safe}' | tr -d '\\0'");
+                var r = await RootShell.ExecAsync($"head -c 65536 '{(_driveC ?? PrefixDrive)}/wpinst/{safe}' | tr -d '\\0'");
                 var s = r.Output;
                 if (s.Contains("NullsoftInst")) return "NSIS";
                 if (s.Contains("InnoSetup")) return "INNO";
@@ -300,7 +319,7 @@ namespace WinPlayInstaller
         async Task<List<string>> ListExesAsync()
         {
             var r = await RootShell.ExecAsync(
-                $"cd '{PrefixDrive}' && find . -path ./unix -prune -o -type f -iname '*.exe' -print 2>/dev/null | sort");
+                $"cd '{(_driveC ?? PrefixDrive)}' && find . -path ./unix -prune -o -type f -iname '*.exe' -print 2>/dev/null | sort");
             return ParseExeLines(r.Output).Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
         }
 
@@ -333,11 +352,71 @@ namespace WinPlayInstaller
                 var file = dosPath.Substring(dosPath.LastIndexOf('\\') + 1);
                 var linkDir = "C:\\apps\\" + safe;
                 var r = await RootShell.ExecAsync(
-                    $"mkdir -p {PrefixDrive}/apps && rm -rf '{PrefixDrive}/apps/{safe}' && ln -sfn '{DosToUnix(dir)}' '{PrefixDrive}/apps/{safe}' && ls -la '{PrefixDrive}/apps/{safe}/{file}' && echo LN_OK");
+                    $"mkdir -p {(_driveC ?? PrefixDrive)}/apps && rm -rf '{(_driveC ?? PrefixDrive)}/apps/{safe}' && ln -sfn '{DosToUnix(dir)}' '{(_driveC ?? PrefixDrive)}/apps/{safe}' && ls -la '{(_driveC ?? PrefixDrive)}/apps/{safe}/{file}' && echo LN_OK");
                 if (r.Output.Contains("LN_OK")) return linkDir + "\\" + file;
             }
             catch { }
             return dosPath;
+        }
+
+        // 探测引擎容器根目录：兼容不同机型/系统版本的引擎目录布局（Issue #2）
+        async Task<string> ResolveDriveAsync()
+        {
+            if (_driveC != null) return _driveC;
+            if (!_haveRoot) return PrefixDrive;
+            var r = await RootShell.ExecAsync($"find /data/user/0/com.xiaomi.winplay -maxdepth 3 -type d -name drive_c 2>/dev/null | head -1");
+            var found = r.Output.Trim();
+            if (found.Length > 5)
+            {
+                _driveC = found;
+                _prefix = System.IO.Path.GetDirectoryName(found);
+                return _driveC;
+            }
+            return null;
+        }
+
+        // 一键修复引擎启动：清残留 wine 会话（冷启动 NPE 元凶）并触发官方入口预热（Issue #2）
+        async Task FixEngineStart()
+        {
+            Log("→ 修复引擎启动：清理残留 wine 进程…");
+            if (_haveRoot)
+            {
+                await RootShell.ExecAsync("for p in $(ps -A -o PID,ARGS | grep -iE 'wineserver|wine C' | awk '{print $1}'); do kill -9 $p 2>/dev/null; done; echo done");
+                Log("   残留 wine 已清理。");
+            }
+            else Log("   无 root：跳过清理（冷启动卡 99% 时可先手动关掉引擎再试）。");
+            try
+            {
+                var warm = new Intent(Intent.ActionView, Android.Net.Uri.Parse("winplay://opensteam?appid=0&devmode=1"));
+                warm.AddFlags(ActivityFlags.NewTask);
+                StartActivity(warm);
+                Log("→ 已触发引擎官方初始化入口（winplay://opensteam），等待窗口就绪后可再次点击启动。");
+            }
+            catch (Exception ex) { Log("触发初始化失败：" + ex.Message); }
+        }
+
+        // 手动路径直装（绕过文件选择器机型限制，Issue #1）
+        async Task InstallByPath()
+        {
+            var p = _pathInput.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(p)) { Log("请输入安装包路径，如 /sdcard/Download/app.exe"); return; }
+            Log("→ 使用手动路径：" + p);
+            var r = await RootShell.ExecAsync($"test -f '{p}' && echo YES || echo NO");
+            if (!r.Output.Contains("YES"))
+            {
+                // 允许 Windows 风格路径（D:\...）与相对 Download 名
+                if (p.StartsWith("/")) { Log("✕ 文件不存在：" + p); return; }
+                p = "/sdcard/Download/" + p.TrimStart('/');
+                r = await RootShell.ExecAsync($"test -f '{p}' && echo YES || echo NO");
+                if (!r.Output.Contains("YES")) { Log("✕ 文件不存在：" + p); return; }
+            }
+            _pickedSharePath = p;
+            _pickedName = Regex.Replace(System.IO.Path.GetFileName(p), @"\.(exe|msi|zip)$", "", RegexOptions.IgnoreCase);
+            if (string.IsNullOrWhiteSpace(_name.Text)) _name.Text = _pickedName;
+            _autoBtn.Enabled = true;
+            _wizardBtn.Enabled = true;
+            _zipBtn.Enabled = p.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+            Log("✔ 已就绪：" + p);
         }
 
         async Task RunZipExtract()
@@ -350,9 +429,9 @@ namespace WinPlayInstaller
             var safe = Regex.Replace(name, @"[^a-zA-Z0-9_-]", "");
             await RootShell.ExecScriptAsync(new[]
             {
-                $"mkdir -p {PrefixDrive}/wpinst",
-                $"cp '{_pickedSharePath}' {PrefixDrive}/wpinst/app.zip",
-                $"chown -R {EngineUid}:{EngineUid} {PrefixDrive}/wpinst"
+                $"mkdir -p {(_driveC ?? PrefixDrive)}/wpinst",
+                $"cp '{_pickedSharePath}' {(_driveC ?? PrefixDrive)}/wpinst/app.zip",
+                $"chown -R {EngineUid}:{EngineUid} {(_driveC ?? PrefixDrive)}/wpinst"
             });
             var rr = await RunWineAsync($"C:\\Program Files\\7-Zip\\7z.exe x C:\\wpinst\\app.zip -oC:\\apps\\{safe} -y");
             if (!rr.Output.Contains("__WINE_EXIT=0"))
@@ -361,7 +440,7 @@ namespace WinPlayInstaller
                 Log("提示：容器内无 7-Zip 时，先用本工具「③图形向导」安装 7-Zip（官网 x64 安装包），即可解锁便携解压。");
                 return;
             }
-            var list = await RootShell.ExecAsync($"find '{PrefixDrive}/apps/{safe}' -maxdepth 3 -iname '*.exe' ! -iname 'unins*' 2>/dev/null | sort");
+            var list = await RootShell.ExecAsync($"find '{(_driveC ?? PrefixDrive)}/apps/{safe}' -maxdepth 3 -iname '*.exe' ! -iname 'unins*' 2>/dev/null | sort");
             var cand = ParseExeLines(list.Output).ToList();
             if (cand.Count == 0) { Log("解压完成但未发现 exe，程序位于 C:\\apps\\" + safe); return; }
             var dos = ToDosPath(cand[0]);
@@ -372,7 +451,7 @@ namespace WinPlayInstaller
             }
             _mainExe.Text = dos;
             Log("✔ 解压完成，主程序：" + dos);
-            await RootShell.ExecAsync($"rm -f {PrefixDrive}/wpinst/app.zip");
+            await RootShell.ExecAsync($"rm -f {(_driveC ?? PrefixDrive)}/wpinst/app.zip");
         }
 
         Task<RootShell.Result> RunWineAsync(string wineArgs)
@@ -380,7 +459,7 @@ namespace WinPlayInstaller
             var script = $@"#!/system/bin/sh
 B={EngineFiles}/arm64-v8a
 cd {EngineFiles} || exit 9
-export WINEPREFIX={EngineFiles}/prefix
+export WINEPREFIX={_prefix ?? EngineFiles + "/prefix"}
 export PATH=$B/bin:$PATH
 export LD_LIBRARY_PATH=$B/lib/wine/aarch64-unix:$B/lib:/product/app/WinPlay/lib/arm64
 export WINEDLLPATH=$B/lib/wine/aarch64-windows:$B/lib/wine/i386-windows:$B/lib/wine
