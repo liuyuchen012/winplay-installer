@@ -38,7 +38,8 @@ namespace WinPlayInstaller
     [Activity(Label = "WinPlay安装器", MainLauncher = true, Exported = true,
         LaunchMode = LaunchMode.SingleTop,
         Theme = "@android:style/Theme.DeviceDefault.Light.NoActionBar",
-        ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize)]
+        ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize,
+        WindowSoftInputMode = Android.Views.SoftInput.AdjustResize)]
     public class MainActivity : Activity
     {
         const int PickFileRequest = 42;
@@ -73,14 +74,15 @@ namespace WinPlayInstaller
         {
             base.OnCreate(savedInstanceState);
 
-            var root = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            root.SetPadding(Dp(16), Dp(16), Dp(16), Dp(16));
+            // 左右布局根容器：左＝操作区（页面+底部导航），右＝日志面板
+            var root = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+            root.SetPadding(Dp(16), Dp(12), Dp(16), Dp(8));
 
+            // ============ 左列：标题 + 页面区 + 底部导航 ============
+            var left = new LinearLayout(this) { Orientation = Orientation.Vertical, LayoutParameters = new LinearLayout.LayoutParams(0, -1, 2.4f) };
             var title = new TextView(this) { Text = "WinPlay 安装器", TextSize = 22f };
             title.SetTextColor(Color.Rgb(30, 30, 30));
-            root.AddView(title);
-
-            // ---- 页面容器（内容区）----
+            left.AddView(title);
 
             // ---- 页 1：安装 ----
             var pInstall = new LinearLayout(this) { Orientation = Orientation.Vertical };
@@ -152,7 +154,6 @@ namespace WinPlayInstaller
             fbTitle.SetTextColor(Color.Rgb(30, 80, 160));
             pLog.AddView(fbTitle);
 
-
             _fbDesc = new EditText(this) { Hint = "问题描述：机型/系统版本/操作步骤/现象…", TextSize = 13f };
             pLog.AddView(_fbDesc);
 
@@ -164,19 +165,18 @@ namespace WinPlayInstaller
             fbCopy.Click += (s, e) => CopyFeedback();
             pLog.AddView(fbCopy);
 
-            // ---- 底部导航栏（Bottom Navigation）----
-            var pages = new LinearLayout(this) { Orientation = Orientation.Vertical, LayoutParameters = new LinearLayout.LayoutParams(-1, 0, 1f) };
+            // ---- 页面容器（滚动，键盘弹出可滚）----
+            var pages = new LinearLayout(this) { Orientation = Orientation.Vertical, LayoutParameters = new LinearLayout.LayoutParams(-1, -2) };
             pages.AddView(pInstall); pages.AddView(pTools); pages.AddView(pLog);
             pTools.Visibility = Android.Views.ViewStates.Gone;
             pLog.Visibility = Android.Views.ViewStates.Gone;
-            root.AddView(pages);
+            var contentScroll = new ScrollView(this) { LayoutParameters = new LinearLayout.LayoutParams(-1, 0, 1f), FillViewport = true };
+            contentScroll.AddView(pages);
+            left.AddView(contentScroll);
 
+            // ---- 底部导航栏（Bottom Navigation）----
             var navRow = new LinearLayout(this) { Orientation = Orientation.Horizontal, LayoutParameters = new LinearLayout.LayoutParams(-1, Dp(88)) };
-            var tabDef = new[] {
-                new[] { "📦", "安装" },
-                new[] { "🧰", "工具" },
-                new[] { "📋", "日志与反馈" }
-            };
+            var tabDef = new[] { new[] { "📦", "安装" }, new[] { "🧰", "工具" }, new[] { "📋", "日志与反馈" } };
             var tabViews = new (LinearLayout root, TextView label)[3];
             Color active = Color.Rgb(37, 99, 235), inactive = Color.Gray;
             for (int i = 0; i < 3; i++)
@@ -205,17 +205,23 @@ namespace WinPlayInstaller
                 tabViews[i].root.Click += (s, e) => SelectTab(idx);
             }
             SelectTab(0);
-            root.AddView(navRow);
+            left.AddView(navRow);
 
-            // ---- 底部全局日志区 ----
+            // ============ 右列：日志面板（常驻）============
+            var right = new LinearLayout(this) { Orientation = Orientation.Vertical, LayoutParameters = new LinearLayout.LayoutParams(0, -1, 1f) };
+            right.SetPadding(Dp(12), Dp(4), Dp(4), Dp(4));
             var logTitle = new TextView(this) { Text = "── 操作日志 ──", TextSize = 13f };
             logTitle.SetTextColor(Color.Rgb(30, 80, 160));
-            root.AddView(logTitle);
+            right.AddView(logTitle);
             _log = new TextView(this) { TextSize = 11f, Text = "就绪。\n" };
             _log.SetTextColor(Color.Rgb(20, 80, 20));
-            var logScroll = new ScrollView(this) { LayoutParameters = new LinearLayout.LayoutParams(-1, Dp(180)) };
+            var logScroll = new ScrollView(this) { LayoutParameters = new LinearLayout.LayoutParams(-1, 0, 1f) };
             logScroll.AddView(_log);
-            root.AddView(logScroll);
+            right.AddView(logScroll);
+
+            root.AddView(left);
+            root.AddView(right);
+            SetContentView(root);
 
             _mainExe.TextChanged += (s, e) =>
             {
@@ -223,8 +229,6 @@ namespace WinPlayInstaller
                 _shortcutBtn.Enabled = ok;
                 _launchBtn.Enabled = ok;
             };
-
-            SetContentView(root);
 
             RootShell.OnLog = m => LogStore.Add(m);
             CheckRoot();
