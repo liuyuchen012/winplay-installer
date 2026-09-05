@@ -75,93 +75,123 @@ namespace WinPlayInstaller
             base.OnCreate(savedInstanceState);
 
             var root = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            root.SetPadding(Dp(20), Dp(24), Dp(20), Dp(20));
+            root.SetPadding(Dp(16), Dp(16), Dp(16), Dp(16));
 
-            var title = new TextView(this) { Text = "WinPlay 安装器", TextSize = 24f };
+            var title = new TextView(this) { Text = "WinPlay 安装器", TextSize = 22f };
             title.SetTextColor(Color.Rgb(30, 30, 30));
             root.AddView(title);
 
-            var sub = new TextView(this) { Text = "选择安装包 → 自动安装（静默/图形向导/便携解压）→ 一键桌面快捷方式", TextSize = 13f };
-            sub.SetTextColor(Color.Gray);
-            root.AddView(sub);
+            // ---- 选项卡行 ----
+            var tabs = new RadioGroup(this) { Orientation = Orientation.Horizontal };
+            var t1 = new RadioButton(this) { Text = "  安装  ", Checked = true, TextSize = 15f };
+            var t2 = new RadioButton(this) { Text = "  工具  ", TextSize = 15f };
+            var t3 = new RadioButton(this) { Text = "  日志与反馈  ", TextSize = 15f };
+            tabs.AddView(t1); tabs.AddView(t2); tabs.AddView(t3);
+            root.AddView(tabs);
 
-            _pickBtn = new Button(this) { Text = "① 选择 安装包（exe / msi / zip）" };
-            _pickBtn.Click += (s, e) => PickFile();
-            root.AddView(_pickBtn);
+            // ---- 页 1：安装 ----
+            var pInstall = new LinearLayout(this) { Orientation = Orientation.Vertical };
+            var pickBtn = new Button(this) { Text = "① 选择 安装包（exe / msi / zip）" };
+            pickBtn.Click += (s, e) => PickFile();
+            pInstall.AddView(pickBtn);
 
             _name = new EditText(this) { Hint = "名称（快捷方式显示名）" };
-            root.AddView(_name);
+            pInstall.AddView(_name);
 
-            _quietArgs = new EditText(this)
-            {
-                Hint = "静默参数（NSIS 默认 /S，不用改）",
-                Text = "/S", TextSize = 13f
-            };
-            root.AddView(_quietArgs);
+            _quietArgs = new EditText(this) { Hint = "静默参数（NSIS 默认 /S，不用改）", Text = "/S", TextSize = 13f };
+            pInstall.AddView(_quietArgs);
 
             _autoBtn = new Button(this) { Text = "② 自动安装 + 创建快捷方式（root，首选）", Enabled = false };
             _autoBtn.Click += (s, e) => RunAutoInstall();
-            root.AddView(_autoBtn);
+            pInstall.AddView(_autoBtn);
 
             _wizardBtn = new Button(this) { Text = "③ 引擎图形安装向导（静默失败时用）", Enabled = false };
             _wizardBtn.Click += (s, e) => LaunchWizard();
-            root.AddView(_wizardBtn);
+            pInstall.AddView(_wizardBtn);
 
             _zipBtn = new Button(this) { Text = "④ zip 便携版解压到容器（免安装绿色软件）", Enabled = false };
             _zipBtn.Click += (s, e) => RunZipExtract();
-            root.AddView(_zipBtn);
+            pInstall.AddView(_zipBtn);
 
-            _mainExe = new EditText(this)
-            {
-                Hint = "⑤ 主程序路径（自动识别；可改，如 C:\\VSCode\\Code.exe）",
-                TextSize = 13f
-            };
-            root.AddView(_mainExe);
+            _mainExe = new EditText(this) { Hint = "⑤ 主程序路径（自动识别；可改，如 C:\\VSCode\\Code.exe）", TextSize = 13f };
+            pInstall.AddView(_mainExe);
 
             _shortcutBtn = new Button(this) { Text = "⑥ 创建桌面快捷方式", Enabled = false };
             _shortcutBtn.Click += (s, e) => CreateShortcutAsync(_name.Text?.Trim(), GetMainPath());
-            root.AddView(_shortcutBtn);
+            pInstall.AddView(_shortcutBtn);
 
             _launchBtn = new Button(this) { Text = "⑦ 直接启动", Enabled = false };
             _launchBtn.Click += (s, e) => Launch(GetMainPath(), _name.Text?.Trim());
-            root.AddView(_launchBtn);
+            pInstall.AddView(_launchBtn);
+
+            _pathInput = new EditText(this) { Hint = "①-备 直接输入安装包路径（选择器不可用时，如 /sdcard/Download/app.exe）", TextSize = 13f };
+            pInstall.AddView(_pathInput);
+
+            var pathBtn = new Button(this) { Text = "用上面路径安装" };
+            pathBtn.Click += (s, e) => InstallByPath();
+            pInstall.AddView(pathBtn);
+
+            // ---- 页 2：工具 ----
+            var pTools = new LinearLayout(this) { Orientation = Orientation.Vertical };
+            var tipT = new TextView(this) { Text = "快捷方式一条龙与引擎问题修复", TextSize = 13f };
+            tipT.SetTextColor(Color.Gray);
+            pTools.AddView(tipT);
 
             _steamBtn = new Button(this) { Text = "⑧ 一键添加 Steam 桌面快捷方式" };
             _steamBtn.Click += (s, e) => AddSteamShortcut();
-            root.AddView(_steamBtn);
-
-            _pathInput = new EditText(this) { Hint = "①-备 直接输入安装包路径（选择器不可用时，如 /sdcard/Download/app.exe）", TextSize = 13f };
-            root.AddView(_pathInput);
-
-            _pathBtn = new Button(this) { Text = "用上面路径安装" };
-            _pathBtn.Click += (s, e) => InstallByPath();
-            root.AddView(_pathBtn);
+            pTools.AddView(_steamBtn);
 
             _fixBtn = new Button(this) { Text = "⑨ 引擎启动修复（初始化失败/卡99%时点这里）" };
             _fixBtn.Click += (s, e) => FixEngineStart();
-            root.AddView(_fixBtn);
+            pTools.AddView(_fixBtn);
 
+            var tipFix = new TextView(this) { Text = "⑨ 会先清理残留 wine 会话（防引擎冷启动 NPE），再触发引擎官方初始化入口。", TextSize = 12f };
+            tipFix.SetTextColor(Color.Rgb(140, 90, 0));
+            pTools.AddView(tipFix);
+
+            // ---- 页 3：日志与反馈 ----
+            var pLog = new LinearLayout(this) { Orientation = Orientation.Vertical };
             var exportBtn = new Button(this) { Text = "⑩ 导出详细日志（含 root 通信/wine 调用全过程）" };
             exportBtn.Click += (s, e) => ExportLog();
-            root.AddView(exportBtn);
+            pLog.AddView(exportBtn);
 
-            var fbTitle = new TextView(this) { Text = "── 问题反馈 ──", TextSize = 14f };
+            var fbTitle = new TextView(this) { Text = "── 问题反馈（自动创建 GitHub Issue）──", TextSize = 14f };
             fbTitle.SetTextColor(Color.Rgb(30, 80, 160));
-            root.AddView(fbTitle);
+            pLog.AddView(fbTitle);
 
-            _fbToken = new EditText(this) { Hint = "GitHub Token（可选）：在 github.com/settings/tokens 生成，只需 Issues 写权限", TextSize = 12f };
-            root.AddView(_fbToken);
+            _fbToken = new EditText(this) { Hint = "GitHub Token（可选）：github.com/settings/tokens 生成，需 Issues 写权限", TextSize = 12f };
+            pLog.AddView(_fbToken);
 
             _fbDesc = new EditText(this) { Hint = "问题描述：机型/系统版本/操作步骤/现象…", TextSize = 13f };
-            root.AddView(_fbDesc);
+            pLog.AddView(_fbDesc);
 
             var fbSend = new Button(this) { Text = "⑪ 发送反馈（设备信息+日志自动附带，上传到 GitHub Issues）" };
             fbSend.Click += (s, e) => SendFeedback();
-            root.AddView(fbSend);
+            pLog.AddView(fbSend);
 
             var fbCopy = new Button(this) { Text = "复制反馈内容到剪贴板（无 Token 时用）" };
             fbCopy.Click += (s, e) => CopyFeedback();
-            root.AddView(fbCopy);
+            pLog.AddView(fbCopy);
+
+            // ---- 页切换 ----
+            var pages = new LinearLayout(this) { Orientation = Orientation.Vertical, LayoutParameters = new LinearLayout.LayoutParams(-1, 0, 1f) };
+            pages.AddView(pInstall); pages.AddView(pTools); pages.AddView(pLog);
+            t1.CheckedChange += (s, e) => { if (e.IsChecked) { pInstall.Visibility = Android.Views.ViewStates.Visible; pTools.Visibility = Android.Views.ViewStates.Gone; pLog.Visibility = Android.Views.ViewStates.Gone; } };
+            t2.CheckedChange += (s, e) => { if (e.IsChecked) { pInstall.Visibility = Android.Views.ViewStates.Gone; pTools.Visibility = Android.Views.ViewStates.Visible; pLog.Visibility = Android.Views.ViewStates.Gone; } };
+            t3.CheckedChange += (s, e) => { if (e.IsChecked) { pInstall.Visibility = Android.Views.ViewStates.Gone; pTools.Visibility = Android.Views.ViewStates.Gone; pLog.Visibility = Android.Views.ViewStates.Visible; } };
+            pTools.Visibility = Android.Views.ViewStates.Gone;
+            pLog.Visibility = Android.Views.ViewStates.Gone;
+            root.AddView(pages);
+
+            // ---- 底部全局日志区 ----
+            var logTitle = new TextView(this) { Text = "── 操作日志 ──", TextSize = 13f };
+            logTitle.SetTextColor(Color.Rgb(30, 80, 160));
+            root.AddView(logTitle);
+            _log = new TextView(this) { TextSize = 11f, Text = "就绪。\n" };
+            _log.SetTextColor(Color.Rgb(20, 80, 20));
+            var logScroll = new ScrollView(this) { LayoutParameters = new LinearLayout.LayoutParams(-1, Dp(180)) };
+            logScroll.AddView(_log);
+            root.AddView(logScroll);
 
             _mainExe.TextChanged += (s, e) =>
             {
@@ -170,13 +200,7 @@ namespace WinPlayInstaller
                 _launchBtn.Enabled = ok;
             };
 
-            _log = new TextView(this) { TextSize = 12f, Text = "就绪。\n" };
-            _log.SetTextColor(Color.Rgb(20, 80, 20));
-            root.AddView(_log);
-
-            var scroll = new ScrollView(this) { LayoutParameters = new LinearLayout.LayoutParams(-1, 0, 1f) };
-            scroll.AddView(root);
-            SetContentView(scroll);
+            SetContentView(root);
 
             RootShell.OnLog = m => LogStore.Add(m);
             CheckRoot();
