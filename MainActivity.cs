@@ -61,7 +61,6 @@ namespace WinPlayInstaller
         EditText _pathInput;
         Button _pathBtn;
         Button _fixBtn;
-        EditText _fbToken;
         EditText _fbDesc;
 
         string _pickedSharePath;
@@ -81,13 +80,7 @@ namespace WinPlayInstaller
             title.SetTextColor(Color.Rgb(30, 30, 30));
             root.AddView(title);
 
-            // ---- 选项卡行 ----
-            var tabs = new RadioGroup(this) { Orientation = Orientation.Horizontal };
-            var t1 = new RadioButton(this) { Text = "  安装  ", Checked = true, TextSize = 15f };
-            var t2 = new RadioButton(this) { Text = "  工具  ", TextSize = 15f };
-            var t3 = new RadioButton(this) { Text = "  日志与反馈  ", TextSize = 15f };
-            tabs.AddView(t1); tabs.AddView(t2); tabs.AddView(t3);
-            root.AddView(tabs);
+            // ---- 页面容器（内容区）----
 
             // ---- 页 1：安装 ----
             var pInstall = new LinearLayout(this) { Orientation = Orientation.Vertical };
@@ -159,29 +152,60 @@ namespace WinPlayInstaller
             fbTitle.SetTextColor(Color.Rgb(30, 80, 160));
             pLog.AddView(fbTitle);
 
-            _fbToken = new EditText(this) { Hint = "GitHub Token（可选）：github.com/settings/tokens 生成，需 Issues 写权限", TextSize = 12f };
-            pLog.AddView(_fbToken);
 
             _fbDesc = new EditText(this) { Hint = "问题描述：机型/系统版本/操作步骤/现象…", TextSize = 13f };
             pLog.AddView(_fbDesc);
 
-            var fbSend = new Button(this) { Text = "⑪ 发送反馈（设备信息+日志自动附带，上传到 GitHub Issues）" };
-            fbSend.Click += (s, e) => SendFeedback();
+            var fbSend = new Button(this) { Text = "⑪ 生成反馈并打开 GitHub 提交页（你登录后点击提交即可）" };
+            fbSend.Click += (s, e) => OpenFeedbackSubmit();
             pLog.AddView(fbSend);
 
             var fbCopy = new Button(this) { Text = "复制反馈内容到剪贴板（无 Token 时用）" };
             fbCopy.Click += (s, e) => CopyFeedback();
             pLog.AddView(fbCopy);
 
-            // ---- 页切换 ----
+            // ---- 底部导航栏（Bottom Navigation）----
             var pages = new LinearLayout(this) { Orientation = Orientation.Vertical, LayoutParameters = new LinearLayout.LayoutParams(-1, 0, 1f) };
             pages.AddView(pInstall); pages.AddView(pTools); pages.AddView(pLog);
-            t1.CheckedChange += (s, e) => { if (e.IsChecked) { pInstall.Visibility = Android.Views.ViewStates.Visible; pTools.Visibility = Android.Views.ViewStates.Gone; pLog.Visibility = Android.Views.ViewStates.Gone; } };
-            t2.CheckedChange += (s, e) => { if (e.IsChecked) { pInstall.Visibility = Android.Views.ViewStates.Gone; pTools.Visibility = Android.Views.ViewStates.Visible; pLog.Visibility = Android.Views.ViewStates.Gone; } };
-            t3.CheckedChange += (s, e) => { if (e.IsChecked) { pInstall.Visibility = Android.Views.ViewStates.Gone; pTools.Visibility = Android.Views.ViewStates.Gone; pLog.Visibility = Android.Views.ViewStates.Visible; } };
             pTools.Visibility = Android.Views.ViewStates.Gone;
             pLog.Visibility = Android.Views.ViewStates.Gone;
             root.AddView(pages);
+
+            var navRow = new LinearLayout(this) { Orientation = Orientation.Horizontal, LayoutParameters = new LinearLayout.LayoutParams(-1, Dp(88)) };
+            var tabDef = new[] {
+                new[] { "📦", "安装" },
+                new[] { "🧰", "工具" },
+                new[] { "📋", "日志与反馈" }
+            };
+            var tabViews = new (LinearLayout root, TextView label)[3];
+            Color active = Color.Rgb(37, 99, 235), inactive = Color.Gray;
+            for (int i = 0; i < 3; i++)
+            {
+                var item = new LinearLayout(this) { Orientation = Orientation.Vertical, LayoutParameters = new LinearLayout.LayoutParams(0, -1, 1f) };
+                try { item.SetGravity(Android.Views.GravityFlags.Center); } catch { }
+                var icon = new TextView(this) { Text = tabDef[i][0], TextSize = 22f, Gravity = Android.Views.GravityFlags.Center };
+                var lbl = new TextView(this) { Text = tabDef[i][1], TextSize = 12f, Gravity = Android.Views.GravityFlags.Center };
+                item.AddView(icon);
+                item.AddView(lbl);
+                navRow.AddView(item);
+                tabViews[i] = (item, lbl);
+            }
+            void SelectTab(int idx)
+            {
+                pInstall.Visibility = idx == 0 ? Android.Views.ViewStates.Visible : Android.Views.ViewStates.Gone;
+                pTools.Visibility = idx == 1 ? Android.Views.ViewStates.Visible : Android.Views.ViewStates.Gone;
+                pLog.Visibility = idx == 2 ? Android.Views.ViewStates.Visible : Android.Views.ViewStates.Gone;
+                for (int i = 0; i < 3; i++)
+                    tabViews[i].label.SetTextColor(i == idx ? active : inactive);
+            }
+            for (int i = 0; i < 3; i++)
+            {
+                var idx = i;
+                tabViews[i].root.Clickable = true;
+                tabViews[i].root.Click += (s, e) => SelectTab(idx);
+            }
+            SelectTab(0);
+            root.AddView(navRow);
 
             // ---- 底部全局日志区 ----
             var logTitle = new TextView(this) { Text = "── 操作日志 ──", TextSize = 13f };
@@ -600,6 +624,37 @@ echo __WINE_EXIT=$?
             await Task.CompletedTask;
         }
 
+        void CopyFeedback()
+        {
+            var desc = _fbDesc.Text?.Trim() ?? "";
+            var stamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            var title = "[" + stamp + "] " + Build.Model + " " + (desc.Length > 40 ? desc.Substring(0, 40) : desc);
+            var body = BuildFeedbackBody(desc, stamp, withLog: true);
+            var clip = Android.Content.ClipData.NewPlainText("feedback", title + "\n\n" + body);
+
+            // .NET 绑定未导出 SetPrimaryClip，用 Java 反射调用
+            var cm = GetSystemService(ClipboardService);
+            var method = cm.Class.GetMethod("setPrimaryClip", new Java.Lang.Class[] { Java.Lang.Class.FromType(typeof(Android.Content.ClipData)) });
+            method.Invoke(cm, new Java.Lang.Object[] { clip });
+            Log("✔ 反馈内容已复制到剪贴板（含设备信息与日志），粘贴到 github.com/" + FbRepo + "/issues/new");
+        }
+
+        string BuildFeedbackBody(string desc, string stamp, bool withLog)
+        {
+            var b = new System.Text.StringBuilder();
+            b.AppendLine("## 反馈时间' + bs + 'n" + stamp);
+            b.AppendLine("## 设备' + bs + 'n" + Build.Manufacturer + " " + Build.Model + " (" + Build.Device + ")' + bs + 'nAndroid " + Build.VERSION.Release + " / SDK " + Build.VERSION.SdkInt);
+            try { b.AppendLine("' + bs + 'nApp 版本: " + PackageManager.GetPackageInfo(PackageName, 0).VersionName); } catch { }
+            b.AppendLine("' + bs + 'n## 问题描述' + bs + 'n" + desc);
+            if (withLog)
+            {
+                var log = LogStore.Full();
+                if (log.Length > 55000) log = log.Substring(log.Length - 55000);
+                b.AppendLine("' + bs + 'n## 详细日志（root通信/wine调用）' + bs + 'n```' + bs + 'n" + log + "' + bs + 'n```");
+            }
+            return b.ToString();
+        }
+
         async Task AddSteamShortcut()
         {
             // 走引擎官方 deep link 路由（零 root，最稳定的 Steam 启动入口）
@@ -717,53 +772,31 @@ echo __WINE_EXIT=$?
         // ---------- ⑪ 反馈：自动上传 GitHub Issue（bug + feedback 标签） ----------
         const string FbRepo = "liuyuchen012/winplay-installer";
 
-        async Task SendFeedback()
+        // ⑪ 生成反馈内容并打开 GitHub 预填提交页（issues/new?title=&body=&labels=bug）。
+        // 用户在自己的 GitHub 账号中登录并点击提交 → 议题归属用户，无需 App 持有任何 Token。
+        async Task OpenFeedbackSubmit()
         {
             var desc = _fbDesc.Text?.Trim();
             if (string.IsNullOrWhiteSpace(desc)) { Log("请先填写问题描述。"); return; }
-            var token = _fbToken.Text?.Trim();
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                Log("✕ 未填写 GitHub Token：请先生成（settings/tokens → Fine-grained → Issue 写权限），或点下方复制按钮手动反馈。");
-                return;
-            }
             var stamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            var title = "[" + stamp + "] " + Build.Model + " " + desc.Substring(0, Math.Min(46, desc.Length)).Replace("\n", " ");
+            var title = (desc.Length > 40 ? desc.Substring(0, 40) : desc).Replace("\n", " ");
             var body = BuildFeedbackBody(desc, stamp, withLog: true);
-            Log("→ 正在上传问题反馈（" + body.Length + " 字符）…");
-            var r = await PostIssueAsync(token, title, body);
-            if (r != null) Log("✔ 已提交 Issue：" + r);
-            else Log("✕ 提交失败（Token 权限/网络），可用「复制反馈内容」手动创建。");
-        }
-
-        void CopyFeedback()
-        {
-            var desc = _fbDesc.Text?.Trim() ?? "";
-            var stamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            var title = "[" + stamp + "] " + Build.Model + " " + (desc.Length > 40 ? desc.Substring(0, 40) : desc);
-            var body = BuildFeedbackBody(desc, stamp, withLog: true);
-            var clip = Android.Content.ClipData.NewPlainText("feedback", title + "\n\n" + body);
-            // .NET 绑定未导出 SetPrimaryClip，用 Java 反射调用
-            var cm = GetSystemService(ClipboardService);
-            var method = cm.Class.GetMethod("setPrimaryClip", new Java.Lang.Class[] { Java.Lang.Class.FromType(typeof(Android.Content.ClipData)) });
-            method.Invoke(cm, new Java.Lang.Object[] { clip });
-            Log("✔ 反馈内容已复制到剪贴板（含设备信息与日志），粘贴到 github.com/" + FbRepo + "/issues/new");
-        }
-
-        string BuildFeedbackBody(string desc, string stamp, bool withLog)
-        {
-            var b = new System.Text.StringBuilder();
-            b.AppendLine("## 反馈时间\n" + stamp);
-            b.AppendLine("## 设备\n" + Build.Manufacturer + " " + Build.Model + " (" + Build.Device + ")\nAndroid " + Build.VERSION.Release + " / SDK " + Build.VERSION.SdkInt);
-            try { b.AppendLine("\nApp 版本: " + PackageManager.GetPackageInfo(PackageName, 0).VersionName); } catch { }
-            b.AppendLine("\n## 问题描述\n" + desc);
-            if (withLog)
+            var url = "https://github.com/" + FbRepo + "/issues/new?title=" + System.Net.WebUtility.UrlEncode(title)
+                      + "&body=" + System.Net.WebUtility.UrlEncode(body.Length > 60000 ? body.Substring(0, 60000) : body)
+                      + "&labels=bug%2Cfeedback";
+            Log("→ 已生成反馈内容，正在打开 GitHub 提交页…");
+            try
             {
-                var log = LogStore.Full();
-                if (log.Length > 55000) log = log.Substring(log.Length - 55000);
-                b.AppendLine("' + bs + 'n## 详细日志（root通信/wine调用）' + bs + 'n```' + bs + 'n" + log + "' + bs + 'n```");
+                var i = new Intent(Intent.ActionView, Android.Net.Uri.Parse(url));
+                i.AddFlags(ActivityFlags.NewTask);
+                StartActivity(i);
+                Log("请在打开的页面确认标题/内容后点「Submit new issue」（登录你自己的 GitHub 账号）。");
             }
-            return b.ToString();
+            catch (Exception ex)
+            {
+                Log("✕ 打开失败：" + ex.Message + "，可用下方「复制反馈内容」手动提交。");
+            }
+            await Task.CompletedTask;
         }
 
         async Task<string> PostIssueAsync(string token, string title, string body)
