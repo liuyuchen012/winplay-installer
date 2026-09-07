@@ -68,6 +68,7 @@ namespace WinPlayInstaller
         string _pickedName;
         bool _haveRoot;
         string _driveC; // 引擎容器根目录（按机型探测，见 ResolveDriveAsync）
+        string _winePath; // 引擎 wine 可执行路径（OS3/OS4 探测，见 GetWinePathAsync）
         string _prefix; // 引擎 WINEPREFIX（drive_c 上级）
 
         protected override void OnCreate(Bundle savedInstanceState)
@@ -234,6 +235,12 @@ namespace WinPlayInstaller
             CheckRoot();
         }
 
+        protected override void OnResume()
+        {
+            base.OnResume();
+            CheckRoot();
+        }
+
         async void CheckRoot()
         {
             try
@@ -242,7 +249,7 @@ namespace WinPlayInstaller
                 _haveRoot = r.Output.Trim() == "0";
                 Log(_haveRoot
                     ? "✓ root 就绪（SukiSU 已授权）。"
-                    : "✕ 未获得 root：打开 SukiSU Ultra → 超级用户 → 添加「WinPlay安装器」为允许后返回本页。自动静默安装需要 root；①③④②（图形向导/便携解压/快捷方式）无需 root。");
+                    : "✕ 未获得 root（su 返回 out=[" + r.Output.Trim() + "] err=[" + r.Error.Trim() + "]，exit=" + r.ExitCode + "）。自动静默安装需要 root；①③④② 无需 root。");
             }
             catch (Exception ex) { Log("root 检测失败：" + ex.Message); }
         }
@@ -315,7 +322,26 @@ namespace WinPlayInstaller
             Log("→ 开始自动安装：" + name);
             if (!_haveRoot) { Log("✕ 自动安装需要 root（见上方说明），可改用③图形向导。"); return; }
             _driveC = await ResolveDriveAsync();
-            if (_driveC == null) { Log("✕ 未找到 PC 引擎容器（引擎可能未完成首次初始化，或该机型/系统未内置 PC 引擎）。"); return; }
+            if (_driveC == null)
+            {
+                // 容器不存在 = 引擎从未初始化（刚重置/新机型常见）：自动唤起引擎官方初始化并轮询等待
+                Log("⚠ PC 引擎未初始化：正在自动唤起初始化（首次需下载组件，约 3-5 分钟）…");
+                try
+                {
+                    var warm = new Intent(Intent.ActionView, Android.Net.Uri.Parse("winplay://opensteam?appid=0&devmode=1"));
+                    warm.AddFlags(ActivityFlags.NewTask);
+                    StartActivity(warm);
+                }
+                catch { }
+                Log("请在引擎界面完成「同意/下载组件」后回到本页（仅首次需要）。");
+                for (int i = 0; i < 12; i++)
+                {
+                    await Task.Delay(10000);
+                    var rd = await ResolveDriveAsync();
+                    if (rd != null) { Log("✔ 引擎容器已就绪，继续安装…"); break; }
+                }
+                if (_driveC == null) { Log("✕ 初始化等待超时：请先到桌面打开任意 PC 应用（如 WPS Office PC）完成初始化，再重试②。"); return; }
+            }
             var ck = await RootShell.ExecAsync($"test -d {_driveC} && echo OK || echo NO");
             if (!ck.Output.Contains("OK"))
             {
@@ -459,10 +485,25 @@ namespace WinPlayInstaller
             if (!_haveRoot) return PrefixDrive;
             var r = await RootShell.ExecAsync($"find /data/user/0/com.xiaomi.winplay -maxdepth 3 -type d -name drive_c 2>/dev/null | head -1");
             var found = r.Output.Trim();
+            if (found.Length <= 5)
+            {
+                // find 在部分设备的 su 环境不可用/受限：直接回退标准布局（OS3/OS4 引擎同构）
+                LogStore.Add("[engine] find 探测失败 out=[" + r.Output.Trim() + "] err=[" + r.Error.Trim() + "]，回退标准容器路径");
+                _driveC = PrefixDrive;
+                _prefix = EngineFiles + "/prefix";
+                return _driveC;
+            }
             if (found.Length > 5)
             {
                 _driveC = found;
                 _prefix = System.IO.Path.GetDirectoryName(found);
+                // 顺便探测 wine 可执行（OS3/OS4/不同引擎版本的 wine 布局可能不同）
+                var w = await RootShell.ExecAsync($"find {EngineFiles} -maxdepth 6 -type f -name wine -path '*aarch64-unix*' 2>/dev/null | head -1");
+                if (!string.IsNullOrWhiteSpace(w.Output)) _winePath = w.Output.Trim();
+                var eng = await RootShell.ExecAsync("dumpsys package com.xiaomi.winplay | grep -m1 versionName | tr -d ' '");
+                var sys = await RootShell.ExecAsync("getprop ro.mi.os.version.name; getprop ro.build.version.release");
+                LogStore.Add("[engine] 引擎版本: " + (eng.Output.Trim().Length > 0 ? eng.Output.Trim() : "unknown") + " | 系统: " + sys.Output.Replace("\n", " ").Trim());
+                LogStore.Add("[engine] wine路径: " + (_winePath ?? "探测失败(无root?)"));
                 return _driveC;
             }
             return null;
@@ -551,6 +592,7 @@ namespace WinPlayInstaller
         {
             var script = $@"#!/system/bin/sh
 B={EngineFiles}/arm64-v8a
+WINE={_winePath ?? EngineFiles + "/arm64-v8a/lib/wine/aarch64-unix/wine"}
 cd {EngineFiles} || exit 9
 export WINEPREFIX={_prefix ?? EngineFiles + "/prefix"}
 export PATH=$B/bin:$PATH
@@ -560,14 +602,17 @@ export TMPDIR=/data/user/0/com.xiaomi.winplay/cache
 export WINPLAY_CONFIG_PATH={EngineFiles}/cloud/winplay.conf
 export LANG=zh_CN.UTF-8
 export WINEDEBUG=-all
-$B/lib/wine/aarch64-unix/wine {wineArgs}
-echo __WINE_EXIT=$?
+chown -R 7100:7100 {EngineFiles}/prefix 2>/dev/null
+$WINE {wineArgs}
+RC=$?
+chown -R 7100:7100 {EngineFiles}/prefix 2>/dev/null
+echo __WINE_EXIT=$RC
 ";
             return RootShell.ExecScriptAsync(new[]
             {
                 "cat > /data/local/tmp/wp_run.sh << 'WPEOF'\n" + script + "WPEOF",
                 "chmod 644 /data/local/tmp/wp_run.sh",
-                $"su {EngineUid} -c sh /data/local/tmp/wp_run.sh"
+                "sh /data/local/tmp/wp_run.sh"
             });
         }
 
