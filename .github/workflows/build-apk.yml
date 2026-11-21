@@ -3,7 +3,11 @@ name: build-apk
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:        # 也支持手动点按钮构建
+  workflow_dispatch:
+
+# 关键：发布 Release 需要写权限
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -16,8 +20,6 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      # 关键：复用同一个 debug keystore，否则每次构建签名都不同，
-      # 新 APK 无法覆盖安装旧版（会提示「应用未安装/签名不一致」）
       - name: 缓存签名密钥
         uses: actions/cache@v4
         with:
@@ -26,15 +28,33 @@ jobs:
             ~/.android
           key: android-debug-keystore-v1
 
-      - name: 安装 android 编译链（Android SDK/JDK 自动准备）
+      - name: 安装 android 编译链
         run: dotnet workload install android
 
       - name: 编译 Release APK
-        run: dotnet publish -f net10.0-android -c Release -p:AndroidPackageFormat=apk
+        # 顺手把 versionCode 改成 run_number，保证每次覆盖安装都能正常升级
+        run: >
+          dotnet publish -f net10.0-android -c Release
+          -p:AndroidPackageFormat=apk
+          -p:ApplicationVersion=${{ github.run_number }}
 
-      - name: 上传 APK
+      - name: 上传 APK（artifact，方便调试下载）
         uses: actions/upload-artifact@v4
         with:
           name: winplay-installer-apk
-          path: '**/*.apk'
+          path: '**/*-signed.apk'
           if-no-files-found: error
+
+      # ========== 新增：自动发布 ==========
+      - name: 发布 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # 用 run_number 作为版本号：v1.0.42、v1.0.43 ……
+          tag_name: v1.0.${{ github.run_number }}
+          name: WinPlay Installer v1.0.${{ github.run_number }}
+          body: |
+            自动构建自 `${{ github.sha }}`
+            提交：${{ github.event.head_commit.message || '手动触发' }}
+          files: '**/*-signed.apk'
+          generate_release_notes: false
+          make_latest: true
