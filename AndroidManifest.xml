@@ -5,6 +5,9 @@
           android:versionName="1.0">
   <uses-sdk android:minSdkVersion="30" />
   <uses-permission android:name="android.permission.INTERNET" />
+  <!-- 申请「所有文件访问」：用于像 Winlator 一样直接读取 SD 卡/U 盘上的游戏目录与图标图片。
+       未授权时程序自动回退 root 通道，功能不中断；盘符映射仍必须 root。 -->
+  <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
   <queries>
     <package android:name="com.xiaomi.winplay" />
   </queries>

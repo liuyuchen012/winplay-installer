@@ -30,6 +30,51 @@
 | ④ zip 便携版解压 | 用容器内的 7-Zip 解压到 `C:\apps\名称`，自动扫描主程序（如 VSCode） |
 | ⑤⑥⑦ | 主程序路径、(手动)创建快捷方式、直接启动 |
 | ⑧ 一键 Steam 快捷方式 | 零 root，路由到引擎官方 deep link，点击即启动 Steam |
+| ⑨ 目录映射 | 给容器加 `E:` 及以后盘符，指向 SD 卡/U 盘任意目录（写入 wine 的 `dosdevices`，需 root） |
+| ⑩ 程序清单 | 按 `apps.json` 一键启动任意已解压的 exe，工作目录自动取 exe 所在文件夹，无需经过 `Download` |
+| ⑪ 最近使用 | 自动记录启动过的程序，可一键再次启动、单条删除 |
+
+## 程序清单（apps.json）
+
+放置位置：`/sdcard/WinPlay/apps.json`（读不到时回退应用私有目录）。首次运行会自动生成带注释的示例文件。
+
+```jsonc
+{
+  "debug": false,                 // true = 详细诊断日志（路径重写/盘符/Env/脚本全文）
+  "autoScrollLog": true,          // 日志面板是否自动滚到底
+  "defaultLang": "zh_CN.UTF-8",   // 玩日文游戏填 ja_JP.UTF-8
+  "recentLimit": 20,              // 「最近使用」最多保留条数
+  "iconScanLimit": 5,             // 自动扫描同目录 exe 提取图标时最多尝试几个
+  "storageMode": "auto",          // auto = 有全盘权限直读、否则回退 root；direct；root
+
+  "mounts": [
+    { "drive": "E:", "android": "/storage/1A2B-3C4D/ROMs" }
+  ],
+
+  "apps": [
+    { "name": "示例游戏", "exe": "D:\\Games\\Sample\\sample.exe" },
+    { "name": "某会社游戏", "exe": "D:\\Games\\A\\boot.exe", "icon": "D:\\Games\\A\\game.exe" },
+    { "name": "日文 Galgame", "exe": "E:\\gal\\game.exe", "args": "-windowed", "lang": "ja_JP.UTF-8" },
+    { "name": "便携工具", "exe": "D:\\Tools\\tool.exe", "args": "-silent", "workdir": "D:\\Tools" }
+  ]
+}
+```
+
+取值优先级：
+
+| 字段 | 缺省链 |
+|---|---|
+| 显示名 | `name` → 父目录名 → exe 文件名去扩展名（用于区分多个 `boot.exe`） |
+| 工作目录 | `workdir` → **exe 所在文件夹** |
+| 语言 | 项 `lang` → `defaultLang` → `zh_CN.UTF-8` |
+| 图标 | `icon`（png/jpg，或某个带图标的 exe）→ exe 同目录 `icon.png`/`logo.png`/`cover.png` → 同目录 exe 自动提取 → 渐变图 + 名字首字 |
+
+注意：
+
+- 盘符从 `E:` 开始，`c:`（容器系统盘）与 `d:`（`/sdcard`）由引擎占用，配置里写了也会被忽略。
+- 目录映射需要 root；无 root 时只做路径重写，不会新增盘符。
+- **工作目录传给引擎用的 `WINPLAY_WORKDIR`/`PWD` 是从引擎接口反推的键名**。若实测游戏仍找不到自身文件，勾选清单页的「强制脚本方式运行」，改用 root 脚本 `cd` 到目录再启动，必定生效。
+- 桌面快捷方式会带上工作目录与语言；但快捷方式 id 仍按创建时间生成，**修改名字或图标需要先长按删除旧快捷方式再重新创建**。
 
 ### root 说明
 
@@ -42,6 +87,8 @@
 - 编译：.NET 10 SDK + `maui-android` workload + JDK 21 + Android SDK 36
 
 ## 构建
+
+> 本机没有 Android 编译环境？见 [搭建本机 Android 编译环境](BUILD-ENV.md)（含 4 件依赖的安装命令与常见报错对照）。
 
 ```bash
 dotnet build -c Release

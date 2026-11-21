@@ -22,6 +22,8 @@ namespace WinPlayInstaller
             base.OnResume();
             var exe = Intent?.GetStringExtra("exe");
             var name = Intent?.GetStringExtra("name");
+            var cwd = Intent?.GetStringExtra("cwd");
+            var lang = Intent?.GetStringExtra("lang");
             if (exe == "steam:")
             {
                 // Steam 走引擎官方 deep link（最稳定的启动入口，自动引导组件/会话）
@@ -33,7 +35,19 @@ namespace WinPlayInstaller
             {
                 var intent = new Intent(Intent.ActionView);
                 intent.SetComponent(new ComponentName("com.xiaomi.winplay", "com.xiaomi.winplay.WineActivity"));
-                intent.PutExtra("app_info", new WinAppInfo(exe, new Dictionary<string, string>(), false));
+
+                // 把工作目录与语言经 Env 字典传给引擎：WinAppInfo 没有独立的 cwd/lang 字段，
+                // Env 是跨进程唯一可扩展的通道。老快捷方式没有这两个 extra，GetStringExtra
+                // 会返回 null，此时 env 为空，引擎按默认行为启动，不会出错。
+                var env = new Dictionary<string, string>();
+                if (!string.IsNullOrWhiteSpace(cwd))
+                {
+                    env["WINPLAY_WORKDIR"] = cwd;
+                    env["PWD"] = cwd;
+                }
+                if (!string.IsNullOrWhiteSpace(lang)) env["LANG"] = lang;
+
+                intent.PutExtra("app_info", new WinAppInfo(exe, env, false));
                 intent.PutExtra("app_name", string.IsNullOrWhiteSpace(name) ? "WinPlay" : name);
                 intent.AddFlags(ActivityFlags.NewTask);
                 StartActivity(intent);
